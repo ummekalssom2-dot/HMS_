@@ -58,16 +58,13 @@ db.serialize(() => {
     FOREIGN KEY(patient_id) REFERENCES patients(id)
   )`);
 
-  // Purani database.sqlite file mein agar table pehle se ban chuki hai (bina appointment_date ke),
-  // to CREATE TABLE IF NOT EXISTS usay update nahi karega. Isliye yeh ALTER TABLE chalao
-  // (agar column pehle se maujood hai to error aayegi jise hum yahan ignore kar rahe hain).
+  // Alter tables to add new columns safely if they don't exist
   db.run(`ALTER TABLE appointments ADD COLUMN appointment_date TEXT`, (err) => {
     if (err && !err.message.includes('duplicate column')) {
       console.log('appointment_date column check:', err.message);
     }
   });
 
-  // Lab Slip ke liye Fee aur Remarks columns (Reception discount de sakti hai)
   db.run(`ALTER TABLE appointments ADD COLUMN lab_fee INTEGER`, (err) => {
     if (err && !err.message.includes('duplicate column')) {
       console.log('lab_fee column check:', err.message);
@@ -77,6 +74,18 @@ db.serialize(() => {
   db.run(`ALTER TABLE appointments ADD COLUMN lab_remarks TEXT`, (err) => {
     if (err && !err.message.includes('duplicate column')) {
       console.log('lab_remarks column check:', err.message);
+    }
+  });
+
+  db.run(`ALTER TABLE appointments ADD COLUMN cash_given INTEGER`, (err) => {
+    if (err && !err.message.includes('duplicate column')) {
+      console.log('cash_given column check:', err.message);
+    }
+  });
+
+  db.run(`ALTER TABLE appointments ADD COLUMN return_change INTEGER`, (err) => {
+    if (err && !err.message.includes('duplicate column')) {
+      console.log('return_change column check:', err.message);
     }
   });
 
@@ -211,6 +220,8 @@ app.get('/api/appointments', (req, res) => {
       appointments.notes,
       appointments.lab_fee,
       appointments.lab_remarks,
+      appointments.cash_given,
+      appointments.return_change,
       patients.id as patient_id,
       patients.first_name,
       patients.last_name,
@@ -256,7 +267,9 @@ app.get('/api/appointments', (req, res) => {
       labTests: row.lab_tests,
       notes: row.notes,
       labFee: row.lab_fee,
-      labRemarks: row.lab_remarks
+      labRemarks: row.lab_remarks,
+      cashGiven: row.cash_given,
+      returnChange: row.return_change
     }));
 
     res.json(formattedRows);
@@ -270,7 +283,7 @@ app.post('/api/appointments/register', (req, res) => {
     alternateNumber, cnic, address, city, bloodGroup, 
     maritalStatus, occupation, emergencyContact, emergencyPhone, 
     allergies, diseaseHistory, remarks, doctorName, department, 
-    visitType, paymentMethod, fee, appointmentDate
+    visitType, paymentMethod, fee, appointmentDate, cashGiven, returnChange
   } = req.body;
 
   const fName = (firstName && firstName.trim() !== '') ? firstName.trim() : 'Guest';
@@ -302,11 +315,16 @@ app.post('/api/appointments/register', (req, res) => {
     const mrId = `MR-2026-${String(patientId).padStart(4, '0')}`;
 
     const apptQuery = `
-      INSERT INTO appointments (patient_id, doctor_name, department, visit_type, payment_method, fee, queue_number, status, payment_status, action_status, appointment_date)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'Waiting', 'Unpaid', 'Pending', ?)
+      INSERT INTO appointments (patient_id, doctor_name, department, visit_type, payment_method, fee, queue_number, status, payment_status, action_status, appointment_date, cash_given, return_change)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'Waiting', 'Unpaid', 'Pending', ?, ?, ?)
     `;
 
-    db.run(apptQuery, [patientId, doctorName || 'Dr. Ahmed', department || 'General Medicine', visitType || 'New Patient', paymentMethod || 'Cash', fee || 1000, queueNumber, apptDate], function(err2) {
+    db.run(apptQuery, [
+      patientId, doctorName || 'Dr. Ahmed', department || 'General Medicine', visitType || 'New Patient', 
+      paymentMethod || 'Cash', fee || 1000, queueNumber, apptDate, 
+      cashGiven !== undefined && cashGiven !== '' ? Number(cashGiven) : 0, 
+      returnChange !== undefined && returnChange !== '' ? Number(returnChange) : 0
+    ], function(err2) {
       if (err2) return res.status(400).json({ success: false, error: err2.message });
 
       res.json({
@@ -354,7 +372,7 @@ app.put('/api/appointments/call/:id', (req, res) => {
   });
 });
 
-// 2. Route to Save Medicines, Lab Tests & Action Status (Admit, Operation, Completed/Send Home)
+// 2. Route to Save Medicines, Lab Tests & Action Status
 app.put('/api/appointments/action/:id', (req, res) => {
   const { id } = req.params;
   const { actionStatus, medicines, labTests, notes } = req.body;
@@ -381,7 +399,7 @@ app.put('/api/appointments/action/:id', (req, res) => {
   });
 });
 
-// 3. Route to Save Lab Slip Fee & Remarks (Reception discount ke liye)
+// 3. Route to Save Lab Slip Fee & Remarks
 app.put('/api/appointments/lab/:id', (req, res) => {
   const { id } = req.params;
   const { labFee, labRemarks } = req.body;
@@ -460,7 +478,6 @@ app.post('/api/lab/complete/:id', (req, res) => {
 
 // ===== Doctor Management Routes =====
 
-// Get all doctors
 app.get('/api/doctors', (req, res) => {
   db.all(`SELECT * FROM doctors ORDER BY id DESC`, [], (err, rows) => {
     if (err) return res.status(500).json({ error: err.message });
@@ -472,7 +489,6 @@ app.get('/api/doctors', (req, res) => {
   });
 });
 
-// Add doctor
 app.post('/api/doctors', (req, res) => {
   const { name, department, phone, email, cnic, timing, gender, fee, status, availability } = req.body;
   const availStr = Array.isArray(availability) ? availability.join(',') : '';
@@ -488,7 +504,6 @@ app.post('/api/doctors', (req, res) => {
   );
 });
 
-// Update doctor
 app.put('/api/doctors/:id', (req, res) => {
   const { name, department, phone, email, cnic, timing, gender, fee, status, availability } = req.body;
   const availStr = Array.isArray(availability) ? availability.join(',') : '';
@@ -503,7 +518,6 @@ app.put('/api/doctors/:id', (req, res) => {
   );
 });
 
-// Delete doctor
 app.delete('/api/doctors/:id', (req, res) => {
   db.run(`DELETE FROM doctors WHERE id = ?`, [req.params.id], function (err) {
     if (err) return res.status(500).json({ error: err.message });

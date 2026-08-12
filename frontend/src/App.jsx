@@ -57,7 +57,7 @@ function Login({ onLogin }) {
             <p className="text-[11px] text-slate-400 font-semibold uppercase tracking-wider mt-0.5">Online Hospital Management System</p>
           </div>
 
-          {/* Role Selector Tabs (Now 7 Roles including Admin) */}
+          {/* Role Selector Tabs */}
           <div className="grid grid-cols-3 md:grid-cols-4 gap-1.5 mb-5 bg-slate-50 p-1.5 rounded-2xl border border-slate-200">
             {['Patient', 'Doctor', 'Reception', 'Laboratory', 'Pharmacy', 'TRP Panel', 'Admin'].map((roleName) => (
               <button
@@ -130,15 +130,9 @@ export default function App() {
 
   return (
     <div className="relative min-h-screen bg-slate-50">
-      {/* Floating Logout Button */}
-      <button 
-        onClick={() => setCurrentRole(null)}
-        className="fixed top-4 right-4 z-50 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded-xl shadow-lg transition cursor-pointer"
-      >
-        Logout
-      </button>
-
-      {/* Role-based exact Dashboard components mapping */}
+      {/* Role-based exact Dashboard components mapping.
+          Each dashboard (e.g. ReceptionDashboard) has its own Logout button
+          with a confirmation modal, so no floating logout button is needed here. */}
       {currentRole === 'Patient' && <PatientsDashboard />}
       {currentRole === 'Doctor' && <DoctorDashboard />}
       {currentRole === 'Reception' && <ReceptionDashboard />}

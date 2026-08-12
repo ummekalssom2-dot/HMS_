@@ -7,6 +7,18 @@ const ReceptionDashboard = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [labSearchQuery, setLabSearchQuery] = useState('');
   const [showSuccessToast, setShowSuccessToast] = useState(false);
+  const [lastRegisteredMrId, setLastRegisteredMrId] = useState('');
+
+  // ---- Logout Modal State ----
+  const [showLogoutModal, setShowLogoutModal] = useState(false);
+
+  // ---- Calculator State ----
+  const [showCalculator, setShowCalculator] = useState(false);
+  const [calcInput, setCalcInput] = useState('0');
+
+  // ---- Single Dropdown Selection & Popup State ----
+  const [selectedReportType, setSelectedReportType] = useState('appt'); 
+  const [activePaymentModal, setActivePaymentModal] = useState(null); 
 
   // ---- Lab Slip modal state ----
   const [selectedLabPatient, setSelectedLabPatient] = useState(null);
@@ -37,51 +49,88 @@ const ReceptionDashboard = () => {
     cnic: '',
     age: '',
     phone: '',
+    address: '',
     doctorName: 'Dr. Ahmed',
     department: 'General Medicine',
     fee: 1500,
-    remark: ''
+    discount: '',
+    cashGiven: '',
+    bookingType: 'Walk-in',
+    callReference: ''
   });
 
-  // ---- Keyboard Shortcuts Effect ----
+  const generateNextMrIdFromList = (currentPatientsList) => {
+    if (!currentPatientsList || currentPatientsList.length === 0) {
+      return 'MR-2026-0001';
+    }
+
+    let maxNum = 0;
+    currentPatientsList.forEach(p => {
+      if (p.mrId && typeof p.mrId === 'string') {
+        const parts = p.mrId.split('-');
+        const numStr = parts[parts.length - 1];
+        const num = parseInt(numStr, 10);
+        if (!isNaN(num) && num > maxNum) {
+          maxNum = num;
+        }
+      }
+    });
+
+    const nextNum = maxNum + 1;
+    return `MR-2026-${String(nextNum).padStart(4, '0')}`;
+  };
+
+  // Calculator Functions
+  const handleCalcClick = (val) => {
+    if (calcInput === '0' || calcInput === 'Error') {
+      setCalcInput(val);
+    } else {
+      setCalcInput(calcInput + val);
+    }
+  };
+
+  const handleCalcClear = () => {
+    setCalcInput('0');
+  };
+
+  const handleCalcEvaluate = () => {
+    try {
+      // eslint-disable-next-line no-eval
+      const result = eval(calcInput);
+      setCalcInput(String(result));
+    } catch (err) {
+      setCalcInput('Error');
+    }
+  };
+
   useEffect(() => {
     const handleKeyDown = (e) => {
-      // Alt + N: Focus on First Name field in Data Entry Form (Browser safe)
       if (e.altKey && e.key.toLowerCase() === 'n') {
         e.preventDefault();
-        e.stopPropagation();
-        e.stopImmediatePropagation();
-        
         const firstNameInput = document.getElementById('rc-firstname-input');
         if (firstNameInput) {
           firstNameInput.focus();
           firstNameInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }
-        return false;
       }
 
-      // Ctrl + F: Focus on All Patients Search Box
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
         e.preventDefault();
-        e.stopPropagation();
-        e.stopImmediatePropagation();
-
         const searchInput = document.getElementById('rc-search-input');
-        if (searchInput) {
-          searchInput.focus();
-        }
-        return false;
+        if (searchInput) searchInput.focus();
       }
 
-      // Escape: Close Lab Slip Modal if open
       if (e.key === 'Escape') {
         closeLabSlip();
+        setShowLogoutModal(false);
+        setActivePaymentModal(null);
+        setShowCalculator(false);
       }
     };
 
     window.addEventListener('keydown', handleKeyDown, true);
     return () => window.removeEventListener('keydown', handleKeyDown, true);
-  }, [selectedLabPatient]);
+  }, []);
 
   useEffect(() => {
     fetchAppointments();
@@ -92,7 +141,6 @@ const ReceptionDashboard = () => {
   const fetchAppointments = async () => {
     try {
       const response = await axios.get('http://localhost:5000/api/appointments');
-
       const updatedData = response.data.map(item => ({
         ...item,
         appointmentDate: item.appointmentDate
@@ -102,6 +150,13 @@ const ReceptionDashboard = () => {
         actionStatus: item.actionStatus || 'Pending'
       }));
       setPatients(updatedData);
+      
+      setFormData(prev => {
+        if (!prev.mrId) {
+          return { ...prev, mrId: generateNextMrIdFromList(updatedData) };
+        }
+        return prev;
+      });
     } catch (err) {
       console.error('Error fetching data:', err);
     }
@@ -123,40 +178,64 @@ const ReceptionDashboard = () => {
   const handleRegister = async (e) => {
     e.preventDefault();
     try {
+      const netFee = (Number(formData.fee) || 0) - (Number(formData.discount) || 0);
+      const cashGivenNum = formData.cashGiven !== '' && !isNaN(formData.cashGiven) ? Number(formData.cashGiven) : netFee;
+      const returnChange = cashGivenNum > netFee ? cashGivenNum - netFee : 0;
+
       const registrationData = {
         ...formData,
         mobileNumber: formData.phone,
-        appointmentDate: allPatientsDate
+        appointmentDate: allPatientsDate,
+        netFee: netFee,
+        cashGiven: cashGivenNum,
+        returnChange: returnChange
       };
 
       const res = await axios.post('http://localhost:5000/api/appointments/register', registrationData);
 
+      const generatedMrId =
+        res.data.mrId ||
+        (res.data.patient && res.data.patient.mrId) ||
+        formData.mrId ||
+        'N/A';
+
       const newPatientItem = {
         ...(res.data.patient || res.data),
         ...formData,
+        netFee,
+        cashGiven: cashGivenNum,
+        returnChange,
+        mrId: generatedMrId,
         appointmentDate: allPatientsDate,
         paymentStatus: 'Unpaid',
         actionStatus: 'Pending',
         _id: res.data._id || res.data.id || Date.now()
       };
 
-      setPatients(prev => [newPatientItem, ...prev]);
+      const updatedPatientsList = [newPatientItem, ...patients];
+      setPatients(updatedPatientsList);
 
+      setLastRegisteredMrId(generatedMrId);
       setShowSuccessToast(true);
-      setTimeout(() => setShowSuccessToast(false), 2000);
+      setTimeout(() => setShowSuccessToast(false), 3000);
 
+      const nextId = generateNextMrIdFromList(updatedPatientsList);
       setFormData({
-        mrId: '',
+        mrId: nextId,
         firstName: '',
         lastName: '',
         gender: 'Male',
         cnic: '',
         age: '',
         phone: '',
+        address: '',
         doctorName: 'Dr. Ahmed',
         department: 'General Medicine',
         fee: 1500,
-        remark: ''
+        discount: '',
+        cashGiven: '',
+        bookingType: 'Walk-in',
+        callReference: ''
       });
     } catch (err) {
       console.error('Registration error:', err);
@@ -177,16 +256,14 @@ const ReceptionDashboard = () => {
         return p;
       }));
     } catch (err) {
-      console.error('Failed to update status in database:', err);
-      alert('Could not update status');
+      console.error('Failed to update status:', err);
     }
   };
 
   const matchesSelectedDate = (p) => {
     const rawDate = p.appointmentDate;
     if (!rawDate) return false;
-    const pDateStr = String(rawDate).split('T')[0];
-    return pDateStr === allPatientsDate;
+    return String(rawDate).split('T')[0] === allPatientsDate;
   };
 
   const filteredPatients = patients
@@ -212,10 +289,40 @@ const ReceptionDashboard = () => {
       return fullName.includes(q) || mrId.includes(q) || phone.includes(q);
     });
 
+  const datePatients = patients.filter(p => matchesSelectedDate(p));
+  const paidDatePatients = datePatients.filter(p => p.paymentStatus === 'Paid');
+
+  const totalAppointmentRevenue = paidDatePatients.reduce((sum, p) => {
+    const fee = Number(p.fee) || 0;
+    const discount = Number(p.discount) || 0;
+    return sum + (fee - discount);
+  }, 0);
+
+  const labPaidPatients = datePatients.filter(p => p.labTests && String(p.labTests).trim() !== '' && p.labFee !== undefined && p.labFee !== null && p.labFee !== '');
+  const totalLabRevenue = labPaidPatients.reduce((sum, p) => sum + (Number(p.labFee) || 0), 0);
+
+  const totalReturnChangeAmount = paidDatePatients.reduce((sum, p) => {
+    const net = (Number(p.fee) || 0) - (Number(p.discount) || 0);
+    const given = p.cashGiven !== undefined && p.cashGiven !== null && p.cashGiven !== '' ? Number(p.cashGiven) : net;
+    const change = p.returnChange !== undefined && p.returnChange !== null ? Number(p.returnChange) : (given > net ? given - net : 0);
+    return sum + change;
+  }, 0);
+
+  const getSelectedDropdownAmount = () => {
+    if (selectedReportType === 'appt') return totalAppointmentRevenue;
+    if (selectedReportType === 'lab') return totalLabRevenue;
+    if (selectedReportType === 'return') return totalReturnChangeAmount;
+    return 0;
+  };
+
+  const calcNetFee = (Number(formData.fee) || 0) - (Number(formData.discount) || 0);
+  const calcCashGiven = formData.cashGiven !== '' && !isNaN(formData.cashGiven) ? Number(formData.cashGiven) : calcNetFee;
+  const calcReturnChange = calcCashGiven > calcNetFee ? calcCashGiven - calcNetFee : 0;
+
   const openLabSlip = (p) => {
     setSelectedLabPatient(p);
     setLabFormData({
-      fee: p.labFee !== undefined && p.labFee !== null && p.labFee !== '' ? p.labFee : (p.fee || ''),
+      fee: p.labFee !== undefined && p.labFee !== null && p.labFee !== '' ? p.labFee : '',
       remarks: p.labRemarks || ''
     });
   };
@@ -280,40 +387,77 @@ const ReceptionDashboard = () => {
           .rd-container {
             height: auto !important;
             overflow-y: auto !important;
-            overflow-x: hidden !important;
           }
           .rd-grid {
             grid-template-columns: 1fr;
-            height: auto;
-          }
-          .rd-column {
-            height: auto;
-          }
-          .rd-column > div {
-            height: auto !important;
-            min-height: 220px;
           }
         }
       `}</style>
 
       {showSuccessToast && (
         <div style={styles.toast}>
-          ✅ Patient Registered Successfully!
+          ✅ Patient Registered! MR ID: {lastRegisteredMrId}
         </div>
       )}
 
+      {/* Top Banner */}
       <div style={styles.topBanner}>
         <div>
           <h2 style={styles.bannerTitle}>Reception Dashboard</h2>
           <p style={styles.bannerSubtitle}>
-            Manage patient registrations, queue flow, and billing seamlessly. 
+            Manage patient registrations and billing seamlessly. 
             <span style={{color: '#2563eb', marginLeft: '8px'}}>💡 Shortcuts: Alt+N (New Entry), Ctrl+F (Search)</span>
           </p>
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          {/* Dropdown Report Box */}
+          <div style={styles.dropdownReportBox}>
+            <div style={{ display: 'flex', flexDirection: 'column' }}>
+              <span style={styles.reportLabel}>Select Report Type:</span>
+              <select 
+                value={selectedReportType}
+                onChange={(e) => setSelectedReportType(e.target.value)}
+                style={styles.reportDropdown}
+              >
+                <option value="appt">📋 Total Appointment Revenue</option>
+                <option value="lab">🧪 Lab Slip / Fees</option>
+                <option value="return">💸 Return Change Amount</option>
+              </select>
+            </div>
+
+            <span style={styles.reportAmount}>
+              Rs. {getSelectedDropdownAmount()}
+            </span>
+
+            <button 
+              onClick={() => setActivePaymentModal(selectedReportType)}
+              style={styles.viewAllBtn}
+            >
+              🔍 View All
+            </button>
+          </div>
+
+          {/* Calculator Button */}
+          <button 
+            onClick={() => setShowCalculator(true)} 
+            style={styles.calcTriggerBtn}
+          >
+            🧮 Calculator
+          </button>
+
+          {/* Clean Logout Button */}
+          <button 
+            onClick={() => setShowLogoutModal(true)} 
+            style={styles.logoutBtn}
+          >
+            Logout
+          </button>
         </div>
       </div>
 
       <div className="rd-grid">
-        {/* Column 1: All Patients & Lab Slip */}
+        {/* Column 1 */}
         <div className="rd-column">
           <div style={styles.cardBoxTall}>
             <div style={styles.cardHeader}>
@@ -329,7 +473,7 @@ const ReceptionDashboard = () => {
               <input
                 id="rc-search-input"
                 type="text"
-                placeholder="Search Name, MR, Phone (Ctrl+F)..."
+                placeholder="Search Name, MR, Phone..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 style={{ ...styles.searchBoxInput, width: '135px' }}
@@ -342,6 +486,9 @@ const ReceptionDashboard = () => {
                 filteredPatients.map((p, index) => {
                   const pId = p.id || p._id;
                   const isPaid = p.paymentStatus === 'Paid';
+                  const net = (Number(p.fee) || 0) - (Number(p.discount) || 0);
+                  const given = p.cashGiven !== undefined && p.cashGiven !== null && p.cashGiven !== '' ? Number(p.cashGiven) : net;
+                  const change = p.returnChange !== undefined && p.returnChange !== null ? Number(p.returnChange) : (given > net ? given - net : 0);
 
                   return (
                     <div key={pId} style={styles.itemCard}>
@@ -359,27 +506,27 @@ const ReceptionDashboard = () => {
                           <div style={{ fontSize: '10px', color: '#475569' }}>
                             Phone: {formatPhone(p)} | {p.doctorName}
                           </div>
-                          <div style={{ fontSize: '10px', color: '#475569' }}>
-                            Status: <span style={{ color: '#0f766e', fontWeight: 'bold' }}>{p.actionStatus || 'Pending'}</span>
-                          </div>
+                          {isPaid && (
+                            <div style={{ fontSize: '10px', color: '#166534', fontWeight: 'bold' }}>
+                              Given: Rs. {given} | Return: Rs. {change}
+                            </div>
+                          )}
                         </div>
                       </div>
 
-                      <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
-                        <select
-                          value={p.paymentStatus || 'Unpaid'}
-                          onChange={(e) => handleStatusChange(pId, e.target.value)}
-                          style={{
-                            ...styles.statusDropdown,
-                            backgroundColor: isPaid ? '#dcfce7' : '#fee2e2',
-                            color: isPaid ? '#166534' : '#991b1b',
-                            borderColor: isPaid ? '#86efac' : '#fca5a5',
-                          }}
-                        >
-                          <option value="Paid">✓ Paid</option>
-                          <option value="Unpaid">Unpaid</option>
-                        </select>
-                      </div>
+                      <select
+                        value={p.paymentStatus || 'Unpaid'}
+                        onChange={(e) => handleStatusChange(pId, e.target.value)}
+                        style={{
+                          ...styles.statusDropdown,
+                          backgroundColor: isPaid ? '#dcfce7' : '#fee2e2',
+                          color: isPaid ? '#166534' : '#991b1b',
+                          borderColor: isPaid ? '#86efac' : '#fca5a5',
+                        }}
+                      >
+                        <option value="Paid">✓ Paid</option>
+                        <option value="Unpaid">Unpaid</option>
+                      </select>
                     </div>
                   );
                 })
@@ -387,7 +534,6 @@ const ReceptionDashboard = () => {
             </div>
           </div>
 
-          {/* Lab Slip / Tests box */}
           <div style={styles.cardBoxShort}>
             <div style={styles.cardHeader}>
               <span style={styles.headerText}>Lab Slip / Tests</span>
@@ -418,7 +564,7 @@ const ReceptionDashboard = () => {
                         </strong>
                       </div>
                       <div style={{ fontSize: '10px', color: '#1e3a8a', fontWeight: '600', paddingLeft: '20px' }}>
-                        🧪 {l.labTests}
+                        🧪 {l.labTests} {l.labFee !== undefined && l.labFee !== null && l.labFee !== '' ? `(Fee: Rs. ${l.labFee})` : ''}
                       </div>
                     </div>
                   );
@@ -428,7 +574,7 @@ const ReceptionDashboard = () => {
           </div>
         </div>
 
-        {/* Column 2: Paid Queue & Extra Box */}
+        {/* Column 2 */}
         <div className="rd-column">
           <div style={styles.cardBoxTallFull}>
             <div style={styles.cardHeader}>
@@ -440,10 +586,19 @@ const ReceptionDashboard = () => {
               ) : (
                 queueList.map((q, index) => {
                   const tokenNum = `Q${String(index + 1).padStart(4, '0')}`;
+                  const net = (Number(q.fee) || 0) - (Number(q.discount) || 0);
+                  const given = q.cashGiven !== undefined && q.cashGiven !== null && q.cashGiven !== '' ? Number(q.cashGiven) : net;
+                  const change = q.returnChange !== undefined && q.returnChange !== null ? Number(q.returnChange) : (given > net ? given - net : 0);
+
                   return (
-                    <div key={index} style={styles.itemCard}>
-                      <div><strong>{tokenNum}</strong> - {q.mrId ? `[${q.mrId}] ` : ''}{q.firstName}</div>
-                      <span style={styles.badgeQueue}>{q.doctorName}</span>
+                    <div key={index} style={{ ...styles.itemCard, flexDirection: 'column', alignItems: 'flex-start', gap: '2px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%' }}>
+                        <strong>{tokenNum}</strong> - {q.mrId ? `[${q.mrId}] ` : ''}{q.firstName}
+                        <span style={styles.badgeQueue}>{q.doctorName}</span>
+                      </div>
+                      <div style={{ fontSize: '9.5px', color: '#166534' }}>
+                        Paid: Rs. {given} | Return: <strong>Rs. {change}</strong>
+                      </div>
                     </div>
                   );
                 })
@@ -461,7 +616,7 @@ const ReceptionDashboard = () => {
           </div>
         </div>
 
-        {/* Column 3: Data Entry Form */}
+        {/* Column 3 */}
         <div className="rd-column">
           <div style={styles.cardBoxForm}>
             <div style={styles.cardHeader}>
@@ -469,8 +624,23 @@ const ReceptionDashboard = () => {
             </div>
             <form onSubmit={handleRegister} style={styles.formGrid}>
               <div style={styles.formGroup}>
-                <label style={styles.label}>MR ID</label>
-                <input type="text" name="mrId" value={formData.mrId} onChange={handleInputChange} placeholder="Auto" style={styles.inputField} />
+                <label style={styles.label}>Booking Type</label>
+                <select name="bookingType" value={formData.bookingType} onChange={handleInputChange} style={styles.inputField}>
+                  <option value="Walk-in">Walk-in</option>
+                  <option value="On-Call">On-Call</option>
+                </select>
+              </div>
+
+              <div style={styles.formGroup}>
+                <label style={styles.label}>MR ID (Auto / Edit)</label>
+                <input 
+                  type="text" 
+                  name="mrId" 
+                  value={formData.mrId} 
+                  onChange={handleInputChange} 
+                  placeholder="MR ID" 
+                  style={styles.inputField} 
+                />
               </div>
 
               <div style={styles.formGroup}>
@@ -512,6 +682,18 @@ const ReceptionDashboard = () => {
               </div>
 
               <div style={{ gridColumn: 'span 2', display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                <label style={styles.label}>Address</label>
+                <input
+                  type="text"
+                  name="address"
+                  value={formData.address}
+                  onChange={handleInputChange}
+                  placeholder="Patient ka address..."
+                  style={styles.inputField}
+                />
+              </div>
+
+              <div style={{ gridColumn: 'span 2', display: 'flex', flexDirection: 'column', gap: '3px' }}>
                 <label style={styles.label}>Assigned Doctor</label>
                 <select name="doctorName" value={formData.doctorName} onChange={handleDoctorChange} style={styles.inputField}>
                   {doctorOptions.map((doc) => (
@@ -523,13 +705,32 @@ const ReceptionDashboard = () => {
               </div>
 
               <div style={styles.formGroup}>
-                <label style={styles.label}>Fee</label>
-                <input type="number" name="fee" value={formData.fee} onChange={handleInputChange} placeholder="Fee" style={styles.inputField} />
+                <label style={styles.label}>Fee (Auto)</label>
+                <input type="number" name="fee" value={formData.fee} readOnly style={{ ...styles.inputField, backgroundColor: '#f1f5f9', color: '#64748b' }} />
               </div>
 
               <div style={styles.formGroup}>
-                <label style={styles.label}>Remarks</label>
-                <input type="text" name="remark" value={formData.remark} onChange={handleInputChange} placeholder="Remarks" style={styles.inputField} />
+                <label style={styles.label}>Discount</label>
+                <input type="number" name="discount" value={formData.discount} onChange={handleInputChange} placeholder="Discount" style={styles.inputField} />
+              </div>
+
+              <div style={styles.formGroup}>
+                <label style={styles.label}>Cash Given</label>
+                <input 
+                  type="number" 
+                  name="cashGiven" 
+                  value={formData.cashGiven} 
+                  onChange={handleInputChange} 
+                  placeholder={`Net: ${calcNetFee}`} 
+                  style={styles.inputField} 
+                />
+              </div>
+
+              <div style={styles.formGroup}>
+                <label style={styles.label}>Return Change</label>
+                <div style={{ ...styles.inputField, backgroundColor: '#f0fdf4', color: '#166534', fontWeight: 'bold', display: 'flex', alignItems: 'center' }}>
+                  Rs. {calcReturnChange}
+                </div>
               </div>
 
               <div style={{ gridColumn: 'span 2', marginTop: '6px' }}>
@@ -539,6 +740,143 @@ const ReceptionDashboard = () => {
           </div>
         </div>
       </div>
+
+      {/* ---- Calculator Modal ---- */}
+      {showCalculator && (
+        <div style={styles.modalOverlay} onClick={() => setShowCalculator(false)}>
+          <div style={styles.calcModalBox} onClick={(e) => e.stopPropagation()}>
+            <div style={styles.modalHeader}>
+              <span style={styles.modalTitle}>🧮 Quick Calculator</span>
+              <button onClick={() => setShowCalculator(false)} style={styles.modalCloseBtn}>✕</button>
+            </div>
+            
+            <div style={styles.calcDisplay}>{calcInput}</div>
+
+            <div style={styles.calcKeypad}>
+              <button onClick={handleCalcClear} style={styles.calcBtnClear}>C</button>
+              <button onClick={() => handleCalcClick('(')} style={styles.calcBtnOp}>(</button>
+              <button onClick={() => handleCalcClick(')')} style={styles.calcBtnOp}>)</button>
+              <button onClick={() => handleCalcClick('/')} style={styles.calcBtnOp}>÷</button>
+
+              <button onClick={() => handleCalcClick('7')} style={styles.calcBtnNum}>7</button>
+              <button onClick={() => handleCalcClick('8')} style={styles.calcBtnNum}>8</button>
+              <button onClick={() => handleCalcClick('9')} style={styles.calcBtnNum}>9</button>
+              <button onClick={() => handleCalcClick('*')} style={styles.calcBtnOp}>×</button>
+
+              <button onClick={() => handleCalcClick('4')} style={styles.calcBtnNum}>4</button>
+              <button onClick={() => handleCalcClick('5')} style={styles.calcBtnNum}>5</button>
+              <button onClick={() => handleCalcClick('6')} style={styles.calcBtnNum}>6</button>
+              <button onClick={() => handleCalcClick('-')} style={styles.calcBtnOp}>-</button>
+
+              <button onClick={() => handleCalcClick('1')} style={styles.calcBtnNum}>1</button>
+              <button onClick={() => handleCalcClick('2')} style={styles.calcBtnNum}>2</button>
+              <button onClick={() => handleCalcClick('3')} style={styles.calcBtnNum}>3</button>
+              <button onClick={() => handleCalcClick('+')} style={styles.calcBtnOp}>+</button>
+
+              <button onClick={() => handleCalcClick('0')} style={{...styles.calcBtnNum, gridColumn: 'span 2'}}>0</button>
+              <button onClick={() => handleCalcClick('.')} style={styles.calcBtnNum}>.</button>
+              <button onClick={handleCalcEvaluate} style={styles.calcBtnEquals}>=</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ---- View All Popup Modal ---- */}
+      {activePaymentModal && (
+        <div style={styles.modalOverlay} onClick={() => setActivePaymentModal(null)}>
+          <div style={styles.paymentModalBox} onClick={(e) => e.stopPropagation()}>
+            <div style={styles.modalHeader}>
+              <span style={styles.modalTitle}>
+                {activePaymentModal === 'appt' && '📋 View All Paid Appointments'}
+                {activePaymentModal === 'lab' && '🧪 View All Lab Tests & Fees'}
+                {activePaymentModal === 'return' && '💸 View All Return Changes'}
+              </span>
+              <button onClick={() => setActivePaymentModal(null)} style={styles.modalCloseBtn}>✕</button>
+            </div>
+
+            <div style={styles.modalBodyList}>
+              {activePaymentModal === 'appt' && (
+                paidDatePatients.length === 0 ? <p style={styles.placeholderText}>No paid appointments for this date.</p> :
+                paidDatePatients.map((p, idx) => {
+                  const net = (Number(p.fee) || 0) - (Number(p.discount) || 0);
+                  return (
+                    <div key={idx} style={styles.paymentModalRow}>
+                      <div>
+                        <strong>{idx + 1}. {p.firstName} {p.lastName}</strong>
+                        <div style={{ fontSize: '9.5px', color: '#64748b' }}>MR: {p.mrId} | Dr: {p.doctorName}</div>
+                      </div>
+                      <div style={{ fontWeight: 'bold', color: '#1e40af' }}>Rs. {net}</div>
+                    </div>
+                  );
+                })
+              )}
+
+              {activePaymentModal === 'lab' && (
+                labPaidPatients.length === 0 ? <p style={styles.placeholderText}>No lab tests found for this date.</p> :
+                labPaidPatients.map((p, idx) => {
+                  const lFee = Number(p.labFee) || 0;
+                  return (
+                    <div key={idx} style={styles.paymentModalRow}>
+                      <div>
+                        <strong>{idx + 1}. {p.firstName} {p.lastName}</strong>
+                        <div style={{ fontSize: '9.5px', color: '#1e3a8a', fontWeight: '600' }}>
+                          🧪 Test: {p.labTests || 'N/A'} {p.labRemarks ? `(${p.labRemarks})` : ''}
+                        </div>
+                        <div style={{ fontSize: '9px', color: '#64748b' }}>MR: {p.mrId || 'N/A'}</div>
+                      </div>
+                      <div style={{ fontWeight: 'bold', color: '#059669', fontSize: '11.5px' }}>
+                        Rs. {lFee}
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+
+              {activePaymentModal === 'return' && (
+                paidDatePatients.filter(p => {
+                  const net = (Number(p.fee) || 0) - (Number(p.discount) || 0);
+                  const given = p.cashGiven !== undefined && p.cashGiven !== null && p.cashGiven !== '' ? Number(p.cashGiven) : net;
+                  const change = p.returnChange !== undefined && p.returnChange !== null ? Number(p.returnChange) : (given > net ? given - net : 0);
+                  return change > 0;
+                }).length === 0 ? <p style={styles.placeholderText}>No return changes recorded for this date.</p> :
+                paidDatePatients.map((p, idx) => {
+                  const net = (Number(p.fee) || 0) - (Number(p.discount) || 0);
+                  const given = p.cashGiven !== undefined && p.cashGiven !== null && p.cashGiven !== '' ? Number(p.cashGiven) : net;
+                  const change = p.returnChange !== undefined && p.returnChange !== null ? Number(p.returnChange) : (given > net ? given - net : 0);
+                  if (change <= 0) return null;
+                  return (
+                    <div key={idx} style={styles.paymentModalRow}>
+                      <div>
+                        <strong>{idx + 1}. {p.firstName} {p.lastName}</strong>
+                        <div style={{ fontSize: '9.5px', color: '#64748b' }}>Given: Rs. {given} | Net Fee: Rs. {net}</div>
+                      </div>
+                      <div style={{ fontWeight: 'bold', color: '#d97706' }}>Rs. {change}</div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            <div style={{ marginTop: '12px', textAlign: 'right' }}>
+              <button onClick={() => setActivePaymentModal(null)} style={styles.modalCloseActionBtn}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ---- Logout Modal ---- */}
+      {showLogoutModal && (
+        <div style={styles.modalOverlay} onClick={() => setShowLogoutModal(false)}>
+          <div style={styles.logoutModalBox} onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ margin: '0 0 8px 0', color: '#1e3a8a', fontSize: '15px' }}>Confirm Logout</h3>
+            <p style={{ fontSize: '11px', color: '#475569', marginBottom: '14px' }}>Kya aap waqai dashboard se logout karna chahte hain?</p>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <button onClick={() => setShowLogoutModal(false)} style={styles.cancelBtn}>Cancel</button>
+              <button onClick={() => { alert('Logged out successfully!'); setShowLogoutModal(false); }} style={styles.confirmLogoutBtn}>Yes, Logout</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ---- Lab Slip Modal ---- */}
       {selectedLabPatient && (
@@ -558,33 +896,17 @@ const ReceptionDashboard = () => {
 
             <div style={styles.modalSection}>
               <label style={styles.label}>Tests </label>
-              <div style={styles.testsBox}>
-                🧪 {selectedLabPatient.labTests || 'N/A'}
-              </div>
+              <div style={styles.testsBox}>🧪 {selectedLabPatient.labTests || 'N/A'}</div>
             </div>
 
-            <div style={styles.formGroup}>
-              <label style={styles.label}>Fee </label>
-              <input
-                type="number"
-                name="fee"
-                value={labFormData.fee}
-                onChange={handleLabFormChange}
-                placeholder="Fee likhein..."
-                style={styles.inputField}
-              />
+            <div style={styles.modalSection}>
+              <label style={styles.label}>Lab Fee </label>
+              <input type="number" name="fee" value={labFormData.fee} onChange={handleLabFormChange} placeholder="Enter lab fee..." style={styles.inputField} />
             </div>
 
             <div style={styles.modalSection}>
               <label style={styles.label}>Remarks </label>
-              <textarea
-                name="remarks"
-                value={labFormData.remarks}
-                onChange={handleLabFormChange}
-                placeholder="Remarks..."
-                rows="3"
-                style={styles.textareaField}
-              />
+              <textarea name="remarks" value={labFormData.remarks} onChange={handleLabFormChange} placeholder="Remarks..." rows="3" style={styles.textareaField} />
             </div>
 
             <div style={styles.modalActions}>
@@ -648,6 +970,139 @@ const styles = {
     fontSize: '10.5px',
     color: '#64748b',
   },
+  dropdownReportBox: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    backgroundColor: '#f8fafc',
+    padding: '4px 8px',
+    borderRadius: '5px',
+    border: '1px solid #cbd5e1',
+  },
+  reportLabel: {
+    fontSize: '9px',
+    fontWeight: '600',
+    color: '#64748b',
+  },
+  reportDropdown: {
+    padding: '2px 6px',
+    borderRadius: '4px',
+    border: '1px solid #cbd5e1',
+    fontSize: '10.5px',
+    backgroundColor: '#ffffff',
+    color: '#1e3a8a',
+    fontWeight: 'bold',
+    cursor: 'pointer',
+    outline: 'none',
+  },
+  reportAmount: {
+    fontSize: '11.5px',
+    fontWeight: 'bold',
+    color: '#16a34a',
+    backgroundColor: '#dcfce7',
+    padding: '4px 8px',
+    borderRadius: '4px',
+    border: '1px solid #bbf7d0',
+    minWidth: '65px',
+    textAlign: 'center',
+  },
+  viewAllBtn: {
+    backgroundColor: '#1e3a8a',
+    color: '#ffffff',
+    border: 'none',
+    padding: '5px 10px',
+    borderRadius: '4px',
+    fontSize: '10px',
+    fontWeight: 'bold',
+    cursor: 'pointer',
+  },
+  calcTriggerBtn: {
+    backgroundColor: '#0284c7',
+    color: '#ffffff',
+    border: 'none',
+    padding: '6px 12px',
+    borderRadius: '5px',
+    fontSize: '11px',
+    fontWeight: 'bold',
+    cursor: 'pointer',
+  },
+  logoutBtn: {
+    backgroundColor: '#dc2626',
+    color: '#ffffff',
+    border: 'none',
+    padding: '6px 14px',
+    borderRadius: '5px',
+    fontSize: '11px',
+    fontWeight: 'bold',
+    cursor: 'pointer',
+    boxShadow: 'none',
+    outline: 'none',
+    WebkitAppearance: 'none',
+    appearance: 'none',
+  },
+  calcModalBox: {
+    backgroundColor: '#fff',
+    borderRadius: '8px',
+    padding: '14px',
+    width: '260px',
+    boxShadow: '0 8px 24px rgba(0,0,0,0.25)',
+  },
+  calcDisplay: {
+    backgroundColor: '#1e293b',
+    color: '#38bdf8',
+    fontSize: '20px',
+    fontWeight: 'bold',
+    textAlign: 'right',
+    padding: '10px',
+    borderRadius: '6px',
+    marginBottom: '10px',
+    overflowX: 'auto',
+  },
+  calcKeypad: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(4, 1fr)',
+    gap: '6px',
+  },
+  calcBtnNum: {
+    padding: '10px',
+    backgroundColor: '#f1f5f9',
+    border: '1px solid #cbd5e1',
+    borderRadius: '4px',
+    fontSize: '13px',
+    fontWeight: 'bold',
+    cursor: 'pointer',
+    color: '#334155',
+  },
+  calcBtnOp: {
+    padding: '10px',
+    backgroundColor: '#e0f2fe',
+    border: '1px solid #bae6fd',
+    borderRadius: '4px',
+    fontSize: '13px',
+    fontWeight: 'bold',
+    cursor: 'pointer',
+    color: '#0369a1',
+  },
+  calcBtnClear: {
+    padding: '10px',
+    backgroundColor: '#fee2e2',
+    border: '1px solid #fca5a5',
+    borderRadius: '4px',
+    fontSize: '13px',
+    fontWeight: 'bold',
+    cursor: 'pointer',
+    color: '#991b1b',
+  },
+  calcBtnEquals: {
+    padding: '10px',
+    backgroundColor: '#16a34a',
+    border: '1px solid #15803d',
+    borderRadius: '4px',
+    fontSize: '13px',
+    fontWeight: 'bold',
+    cursor: 'pointer',
+    color: '#fff',
+  },
   boxDatePicker: {
     padding: '1px 4px',
     borderRadius: '3px',
@@ -669,7 +1124,6 @@ const styles = {
     flexDirection: 'column',
     boxSizing: 'border-box',
     border: '1.5px solid #93c5fd',
-    boxShadow: '0 1px 2px rgba(0,0,0,0.04)',
   },
   cardBoxTallFull: {
     backgroundColor: '#ffffff',
@@ -681,7 +1135,6 @@ const styles = {
     flexDirection: 'column',
     boxSizing: 'border-box',
     border: '1.5px solid #93c5fd',
-    boxShadow: '0 1px 2px rgba(0,0,0,0.04)',
   },
   cardBoxShort: {
     backgroundColor: '#ffffff',
@@ -693,7 +1146,6 @@ const styles = {
     flexDirection: 'column',
     boxSizing: 'border-box',
     border: '1.5px solid #93c5fd',
-    boxShadow: '0 1px 2px rgba(0,0,0,0.04)',
   },
   cardBoxForm: {
     backgroundColor: '#ffffff',
@@ -705,7 +1157,6 @@ const styles = {
     flexDirection: 'column',
     boxSizing: 'border-box',
     border: '1.5px solid #93c5fd',
-    boxShadow: '0 1px 2px rgba(0,0,0,0.04)',
     overflowY: 'auto',
   },
   cardHeader: {
@@ -715,7 +1166,6 @@ const styles = {
     paddingBottom: '6px',
     marginBottom: '6px',
     borderBottom: '1px solid #e2e8f0',
-    flex: '0 0 auto',
   },
   cardHeaderClean: {
     display: 'flex',
@@ -723,8 +1173,6 @@ const styles = {
     alignItems: 'center',
     paddingBottom: '2px',
     marginBottom: '6px',
-    borderBottom: 'none',
-    flex: '0 0 auto',
   },
   headerText: {
     fontSize: '12px',
@@ -736,9 +1184,8 @@ const styles = {
     border: '1px solid #cbd5e1',
     borderRadius: '4px',
     padding: '2px 6px',
-    color: '#000000',
+    color: '#000',
     fontSize: '10px',
-    width: '75px',
     outline: 'none',
   },
   contentListTall: {
@@ -747,7 +1194,6 @@ const styles = {
     gap: '5px',
     overflowY: 'auto',
     flex: 1,
-    minHeight: 0,
   },
   contentListShort: {
     display: 'flex',
@@ -755,7 +1201,6 @@ const styles = {
     gap: '5px',
     overflowY: 'auto',
     flex: 1,
-    minHeight: 0,
   },
   placeholderText: {
     color: '#94a3b8',
@@ -821,7 +1266,6 @@ const styles = {
     outline: 'none',
     boxSizing: 'border-box',
     width: '100%',
-    fontFamily: 'inherit',
     resize: 'none',
   },
   submitBtn: {
@@ -847,15 +1291,79 @@ const styles = {
     justifyContent: 'center',
     zIndex: 10000,
   },
+  logoutModalBox: {
+    backgroundColor: '#fff',
+    borderRadius: '8px',
+    padding: '16px',
+    width: '280px',
+    textAlign: 'center',
+  },
+  cancelBtn: {
+    flex: 1,
+    padding: '6px',
+    backgroundColor: '#e2e8f0',
+    color: '#334155',
+    border: 'none',
+    borderRadius: '4px',
+    fontSize: '11px',
+    fontWeight: 'bold',
+    cursor: 'pointer',
+  },
+  confirmLogoutBtn: {
+    flex: 1,
+    padding: '6px',
+    backgroundColor: '#dc2626',
+    color: '#fff',
+    border: 'none',
+    borderRadius: '4px',
+    fontSize: '11px',
+    fontWeight: 'bold',
+    cursor: 'pointer',
+  },
+  paymentModalBox: {
+    backgroundColor: '#fff',
+    borderRadius: '8px',
+    padding: '16px',
+    width: '380px',
+    maxWidth: '92vw',
+    maxHeight: '82vh',
+    overflowY: 'auto',
+    boxShadow: '0 8px 24px rgba(0,0,0,0.25)',
+  },
+  modalBodyList: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '6px',
+    maxHeight: '50vh',
+    overflowY: 'auto',
+  },
+  paymentModalRow: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: '8px 10px',
+    backgroundColor: '#f8fafc',
+    borderRadius: '5px',
+    border: '1px solid #e2e8f0',
+    fontSize: '11px',
+  },
+  modalCloseActionBtn: {
+    padding: '6px 14px',
+    backgroundColor: '#1e3a8a',
+    color: '#fff',
+    border: 'none',
+    borderRadius: '4px',
+    fontSize: '11px',
+    fontWeight: 'bold',
+    cursor: 'pointer',
+  },
   modalBox: {
     backgroundColor: '#fff',
     borderRadius: '8px',
     padding: '16px',
     width: '340px',
-    maxWidth: '92vw',
     maxHeight: '88vh',
     overflowY: 'auto',
-    boxShadow: '0 8px 24px rgba(0,0,0,0.25)',
   },
   modalHeader: {
     display: 'flex',
@@ -866,7 +1374,7 @@ const styles = {
     marginBottom: '10px',
   },
   modalTitle: {
-    fontSize: '14px',
+    fontSize: '13px',
     fontWeight: 'bold',
     color: '#1e3a8a',
   },
@@ -884,7 +1392,6 @@ const styles = {
     border: '1px solid #bfdbfe',
     marginBottom: '10px',
     fontSize: '12px',
-    color: '#1e293b',
   },
   modalSection: {
     marginBottom: '10px',
