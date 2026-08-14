@@ -1,10 +1,19 @@
 const express = require('express');
 const sqlite3 = require('sqlite3').verbose();
 const cors = require('cors');
+const multer = require('multer');
+const path = require('path');
 
 const app = express();
 app.use(express.json());
 app.use(cors());
+
+// File upload setup for attachments
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, 'uploads/'),
+  filename: (req, file, cb) => cb(null, Date.now() + '-' + file.originalname)
+});
+const upload = multer({ storage });
 
 // Initialize SQLite Database
 const db = new sqlite3.Database('./database.sqlite', (err) => {
@@ -58,35 +67,23 @@ db.serialize(() => {
     FOREIGN KEY(patient_id) REFERENCES patients(id)
   )`);
 
-  // Alter tables to add new columns safely if they don't exist
-  db.run(`ALTER TABLE appointments ADD COLUMN appointment_date TEXT`, (err) => {
-    if (err && !err.message.includes('duplicate column')) {
-      console.log('appointment_date column check:', err.message);
-    }
-  });
+  // Safe Column Alterations
+  const columnsToAdd = [
+    `ALTER TABLE appointments ADD COLUMN appointment_date TEXT`,
+    `ALTER TABLE appointments ADD COLUMN lab_fee INTEGER`,
+    `ALTER TABLE appointments ADD COLUMN lab_remarks TEXT`,
+    `ALTER TABLE appointments ADD COLUMN cash_given INTEGER`,
+    `ALTER TABLE appointments ADD COLUMN return_change INTEGER`,
+    `ALTER TABLE appointments ADD COLUMN attached_file TEXT`,
+    `ALTER TABLE appointments ADD COLUMN vitals_done INTEGER DEFAULT 0`
+  ];
 
-  db.run(`ALTER TABLE appointments ADD COLUMN lab_fee INTEGER`, (err) => {
-    if (err && !err.message.includes('duplicate column')) {
-      console.log('lab_fee column check:', err.message);
-    }
-  });
-
-  db.run(`ALTER TABLE appointments ADD COLUMN lab_remarks TEXT`, (err) => {
-    if (err && !err.message.includes('duplicate column')) {
-      console.log('lab_remarks column check:', err.message);
-    }
-  });
-
-  db.run(`ALTER TABLE appointments ADD COLUMN cash_given INTEGER`, (err) => {
-    if (err && !err.message.includes('duplicate column')) {
-      console.log('cash_given column check:', err.message);
-    }
-  });
-
-  db.run(`ALTER TABLE appointments ADD COLUMN return_change INTEGER`, (err) => {
-    if (err && !err.message.includes('duplicate column')) {
-      console.log('return_change column check:', err.message);
-    }
+  columnsToAdd.forEach(query => {
+    db.run(query, (err) => {
+      if (err && !err.message.includes('duplicate column')) {
+        console.log('Column check notice:', err.message);
+      }
+    });
   });
 
   db.run(`CREATE TABLE IF NOT EXISTS prescriptions (
@@ -104,7 +101,6 @@ db.serialize(() => {
     FOREIGN KEY(appointment_id) REFERENCES appointments(id)
   )`);
 
-  // Doctors table (Admin Dashboard - Doctor Management ke liye)
   db.run(`CREATE TABLE IF NOT EXISTS doctors (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT,
@@ -222,13 +218,17 @@ app.get('/api/appointments', (req, res) => {
       appointments.lab_remarks,
       appointments.cash_given,
       appointments.return_change,
+      appointments.attached_file,
+      appointments.vitals_done,
       patients.id as patient_id,
       patients.first_name,
       patients.last_name,
       patients.age,
       patients.gender,
       patients.mobile_number,
-      patients.cnic
+      patients.cnic,
+      patients.address,
+      patients.blood_group
     FROM appointments
     JOIN patients ON appointments.patient_id = patients.id
   `;
@@ -251,6 +251,7 @@ app.get('/api/appointments', (req, res) => {
       mrId: `MR-2026-${String(row.patient_id).padStart(4, '0')}`,
       firstName: row.first_name,
       lastName: row.last_name,
+      name: `${row.first_name} ${row.last_name || ''}`,
       age: row.age,
       gender: row.gender,
       mobileNumber: row.mobile_number,
@@ -269,7 +270,13 @@ app.get('/api/appointments', (req, res) => {
       labFee: row.lab_fee,
       labRemarks: row.lab_remarks,
       cashGiven: row.cash_given,
-      returnChange: row.return_change
+      returnChange: row.return_change,
+      attachedFile: row.attached_file,
+      vitalsDone: row.vitals_done === 1,
+      height: "5'8\"", // Default placeholder or fetch if column exists
+      weight: "70kg",
+      bp: "120/80",
+      pulse: "72"
     }));
 
     res.json(formattedRows);
@@ -338,6 +345,22 @@ app.post('/api/appointments/register', (req, res) => {
   });
 });
 
+// Attach File Endpoint for Reception Panel
+app.post('/api/appointments/attach/:id', upload.single('file'), (req, res) => {
+  const { id } = req.params;
+  const fileName = req.file ? req.file.filename : null;
+
+  if (!fileName) {
+    return res.status(400).json({ success: false, error: 'No file uploaded' });
+  }
+
+  const query = `UPDATE appointments SET attached_file = ? WHERE id = ?`;
+  db.run(query, [fileName, id], function(err) {
+    if (err) return res.status(500).json({ success: false, error: err.message });
+    res.json({ success: true, message: 'File attached successfully', fileName });
+  });
+});
+
 // Update Patient Payment & Action Status Route
 app.put('/api/appointments/status/:id', (req, res) => {
   const { id } = req.params;
@@ -360,7 +383,7 @@ app.put('/api/appointments/status/:id', (req, res) => {
   });
 });
 
-// 1. Route to Call Patient from Queue
+// Route to Call Patient from Queue
 app.put('/api/appointments/call/:id', (req, res) => {
   const { id } = req.params;
   const { actionStatus } = req.body;
@@ -372,10 +395,10 @@ app.put('/api/appointments/call/:id', (req, res) => {
   });
 });
 
-// 2. Route to Save Medicines, Lab Tests & Action Status
+// Route to Save Medicines, Lab Tests & Action Status (also handles TRP vitals-done flag)
 app.put('/api/appointments/action/:id', (req, res) => {
   const { id } = req.params;
-  const { actionStatus, medicines, labTests, notes } = req.body;
+  const { actionStatus, medicines, labTests, notes, vitalsDone } = req.body;
 
   const appStatus = (actionStatus === 'Completed') ? 'Completed' : 'Waiting';
 
@@ -383,14 +406,23 @@ app.put('/api/appointments/action/:id', (req, res) => {
     UPDATE appointments 
     SET 
       action_status = ?, 
-      medicines = ?, 
-      lab_tests = ?, 
-      notes = ?,
-      status = ?
+      medicines = COALESCE(?, medicines), 
+      lab_tests = COALESCE(?, lab_tests), 
+      notes = COALESCE(?, notes),
+      status = ?,
+      vitals_done = COALESCE(?, vitals_done)
     WHERE id = ?
   `;
 
-  db.run(query, [actionStatus || 'Pending', medicines || '', labTests || '', notes || '', appStatus, id], function(err) {
+  db.run(query, [
+    actionStatus || 'Pending',
+    medicines,
+    labTests,
+    notes,
+    appStatus,
+    vitalsDone === true ? 1 : null,
+    id
+  ], function(err) {
     if (err) {
       console.error("Error updating action:", err.message);
       return res.status(500).json({ success: false, error: err.message });
@@ -399,7 +431,7 @@ app.put('/api/appointments/action/:id', (req, res) => {
   });
 });
 
-// 3. Route to Save Lab Slip Fee & Remarks
+// Route to Save Lab Slip Fee & Remarks
 app.put('/api/appointments/lab/:id', (req, res) => {
   const { id } = req.params;
   const { labFee, labRemarks } = req.body;
@@ -486,6 +518,15 @@ app.get('/api/doctors', (req, res) => {
       availability: doc.availability ? doc.availability.split(',') : []
     }));
     res.json(doctors);
+  });
+});
+// Remove attached file from an appointment
+app.put('/api/appointments/detach/:id', (req, res) => {
+  const { id } = req.params;
+  const query = `UPDATE appointments SET attached_file = NULL WHERE id = ?`;
+  db.run(query, [id], function(err) {
+    if (err) return res.status(500).json({ success: false, error: err.message });
+    res.json({ success: true, message: 'File removed successfully' });
   });
 });
 
